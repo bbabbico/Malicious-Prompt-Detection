@@ -109,24 +109,66 @@ async def analyze_demo(request: PromptAnalysisDemoRequest):
     
     start_time = time.time()
     model_type = 1 if "large" in request.model.lower() else 0
-    is_malicious, risk_score = analyze_prompt_threat(request.prompt, model_type=model_type)
+    
+    # 1. 실제 AI 보안 분석 엔진 호출
+    analysis_res = analyze_prompt_threat(request.prompt, model_type=model_type)
     process_time = int((time.time() - start_time) * 1000)
     
-    # We still want to return categories for the UI
-    # Since the LightGBM model returns a single score, we can mock the category distribution
-    # based on the overall score to keep the UI looking nice.
-    categories = [
-        {"name": "Prompt Injection", "detected": is_malicious, "confidence": risk_score / 100.0 if is_malicious else 0.05},
-        {"name": "Jailbreak Attempt", "detected": is_malicious and risk_score > 80, "confidence": (risk_score / 100.0) * 0.8 if is_malicious else 0.02},
-        {"name": "Role Manipulation", "detected": is_malicious and risk_score > 60, "confidence": (risk_score / 100.0) * 0.6 if is_malicious else 0.03},
-        {"name": "Harmful Content", "detected": False, "confidence": 0.01}
-    ]
+    is_malicious = analysis_res["is_malicious"]
+    risk_score = analysis_res["risk_score"]
+    category = analysis_res["category"]
+    is_anomaly = analysis_res["is_anomaly"]
+    
+    # 2. UI 하위 호환성을 완벽히 보장하면서도 실제 탐지 데이터를 기반으로 다이나믹 매핑
+    # 기존 고정 카테고리에 '실제 탐지된 악성 카테고리'와 '신종 이상치 감지 여부'를 온전히 투영합니다.
+    confidence_val = risk_score / 100.0 if is_malicious else 0.01
+    
+    # 2. 실시간 군집 매핑 결과를 바탕으로 세부 카테고리 다이나믹 동적 빌드 (29개 위협 전면 개방)
+    categories = []
+    
+    # 2-1) Prompt Injection 지표
+    categories.append({
+        "name": "Prompt Injection / Obfuscation (지능형 우회 검사)",
+        "detected": is_malicious and (is_anomaly or "Bypassing" in str(category)),
+        "confidence": confidence_val * 0.95 if is_malicious else 0.01
+    })
+    
+    # 2-2) Jailbreak 및 Anomaly 경보 동적 탑재
+    if is_anomaly:
+        categories.append({
+            "name": "⚠️ SHIELD ALERT (미지의 신종 변종 제로데이)",
+            "detected": True,
+            "confidence": 0.98
+        })
+    else:
+        categories.append({
+            "name": "Jailbreak: Known Type (기존 탐색된 보안 위협)",
+            "detected": is_malicious,
+            "confidence": confidence_val * 0.85 if is_malicious else 0.01
+        })
+        
+    # 2-3) 백엔드 HDBSCAN 군집 엔진이 분류해 낸 진짜 29개 실측 위반 카테고리 동적 주입!
+    if is_malicious:
+        categories.append({
+            "name": f"Harmful Content: {category}",
+            "detected": True,
+            "confidence": confidence_val
+        })
+    else:
+        categories.append({
+            "name": "Harmful Content: Safe (유해 콘텐츠 미검출)",
+            "detected": False,
+            "confidence": 0.01
+        })
     
     return {
         "safe": not is_malicious,
         "score": risk_score / 100.0,
         "categories": categories,
-        "processingTime": process_time
+        "processingTime": process_time,
+        "cluster_id": analysis_res["cluster_id"],
+        "is_anomaly": is_anomaly,
+        "violation_type": category
     }
 
 @router.post("/v1/analyze")

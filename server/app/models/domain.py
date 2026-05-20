@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Float, Text, Index
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Float, Text, Index, Boolean
 from sqlalchemy.sql import func
 from app.core.database import Base
 
@@ -34,6 +34,11 @@ class DetectionLog(Base):
     action_taken = Column(String(50)) # e.g., 'allowed', 'blocked'
     process_time_ms = Column(Integer)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # 지연 실시간 AI 분석 파이프라인의 핵심 연동 메타데이터 컬럼 확장
+    violation_type = Column(String(255), nullable=True) # 유해 카테고리
+    is_anomaly = Column(Boolean, default=False, nullable=False) # 신종 변종 이상치 여부
+    cluster_id = Column(Integer, nullable=True) # KNN 매핑 클러스터 ID 번호
 
     __table_args__ = (
         Index("idx_key_created", "key_id", "created_at"),

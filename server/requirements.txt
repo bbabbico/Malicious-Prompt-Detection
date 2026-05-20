@@ -14,3 +14,4 @@ sentence-transformers
 lightgbm
 numpy
 scikit-learn
+umap-learn

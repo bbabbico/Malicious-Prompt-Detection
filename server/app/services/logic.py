@@ -47,7 +47,11 @@ class AnalyzeService:
             return {"error": "Rate limit exceeded", "status": 429}
 
         # 3. Content Analysis (Integrated with AI Developer's function)
-        is_malicious, risk_score = analyze_prompt_threat(prompt)
+        analysis_res = analyze_prompt_threat(prompt)
+        is_malicious = analysis_res["is_malicious"]
+        risk_score = analysis_res["risk_score"]
+        category = analysis_res["category"]
+        is_anomaly = analysis_res["is_anomaly"]
         
         # Determine action based on boolean result from AI
         action = "blocked" if is_malicious else "allowed"
@@ -60,7 +64,10 @@ class AnalyzeService:
             used_track="ai-model-v1",
             risk_score_pct=float(risk_score),
             action_taken=action,
-            process_time_ms=process_time
+            process_time_ms=process_time,
+            violation_type=category,
+            is_anomaly=is_anomaly,
+            cluster_id=analysis_res["cluster_id"]
         )
         
         return {
@@ -68,6 +75,9 @@ class AnalyzeService:
             "risk_score": risk_score,
             "action": action,
             "process_time_ms": process_time,
+            "cluster_id": analysis_res["cluster_id"],
+            "is_anomaly": is_anomaly,
+            "violation_type": category,
             "log_data": log
         }
 
