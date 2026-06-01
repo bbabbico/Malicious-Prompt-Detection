@@ -12,5 +12,9 @@ python-dotenv
 async-lru
 sentence-transformers
 lightgbm
+xgboost
 numpy
 scikit-learn
+onnxruntime
+transformers
+optimum[onnxruntime]
