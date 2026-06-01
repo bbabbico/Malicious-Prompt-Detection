@@ -133,8 +133,9 @@ async def analyze(
     if "error" in result:
         raise HTTPException(status_code=result["status"], detail=result["error"])
     
-    # Background log save
+    # Background log save with optional XAI
     log_data = result.pop("log_data")
-    background_tasks.add_task(service.log_repo.create, log_data)
+    model_type = result.pop("model_type")
+    background_tasks.add_task(service.process_xai_and_log, log_data, model_type)
     
     return result
