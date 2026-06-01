@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Float, Text, Index
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Float, Text, Index, JSON
 from sqlalchemy.sql import func
 from app.core.database import Base
 
@@ -33,6 +33,7 @@ class DetectionLog(Base):
     risk_score_pct = Column(Float)
     action_taken = Column(String(50)) # e.g., 'allowed', 'blocked'
     process_time_ms = Column(Integer)
+    xai_highlights = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (

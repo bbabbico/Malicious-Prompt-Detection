@@ -198,7 +198,35 @@ class MaliciousPromptDetector:
 
         except Exception as e:
             print(f"분석 중 오류 발생: {e}")
+            # 에러 발생 시 안전하게 '정상'으로 처리하거나 예외를 던질 수 있음
             return False, 0
+
+    def analyze_xai_explain(self, prompt: str, model_type: int = 0):
+        try:
+            import shap
+            embedder, classifier, _ = self._load_resources(model_type)
+            
+            def prediction_function(texts):
+                formatted_texts = [f"query: {t}" for t in texts]
+                embeddings = embedder.encode(formatted_texts, show_progress_bar=False)
+                probs = classifier.predict(embeddings)
+                return probs
+
+            # shap_values.data[0] contains tokens, shap_values.values[0] contains SHAP weights
+            explainer = shap.Explainer(prediction_function, shap.maskers.Text(r"\W"))
+            shap_values = explainer([prompt])
+            
+            highlights = []
+            tokens = shap_values.data[0]
+            weights = shap_values.values[0]
+            
+            for t, w in zip(tokens, weights):
+                highlights.append({"text": str(t), "weight": float(w)})
+                
+            return highlights
+        except Exception as e:
+            print(f"XAI 분석 중 오류 발생: {e}")
+            return []
 
     def preload_models(self):
         print("모델 프리로딩 시작...")

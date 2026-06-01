@@ -11,6 +11,17 @@ const Logs: React.FC = () => {
       .catch(err => setError(err.message));
   }, []);
 
+  const getHighlightStyle = (weight: number) => {
+    if (weight <= 0) return {};
+    const opacity = Math.min(weight * 2, 0.8);
+    return {
+      backgroundColor: `rgba(220, 38, 38, ${opacity})`,
+      color: opacity > 0.5 ? '#fff' : 'inherit',
+      borderRadius: '2px',
+      padding: '0 2px'
+    };
+  };
+
   return (
     <div>
       <h2>탐지 로그</h2>
@@ -30,8 +41,16 @@ const Logs: React.FC = () => {
           {logs.map((log, i) => (
             <tr key={i}>
               <td>{new Date(log.created_at).toLocaleString()}</td>
-              <td style={{ maxWidth: '300px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {log.prompt}
+              <td style={{ maxWidth: '400px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'normal', lineHeight: '1.5' }}>
+                {log.xai_highlights && log.xai_highlights.length > 0 ? (
+                  log.xai_highlights.map((h: any, idx: number) => (
+                    <span key={idx} style={getHighlightStyle(h.weight)}>
+                      {h.text}
+                    </span>
+                  ))
+                ) : (
+                  log.prompt
+                )}
               </td>
               <td>{log.risk_score > 50 ? <span className="error">악성</span> : <span className="success">안전</span>}</td>
               <td>{log.risk_score}%</td>

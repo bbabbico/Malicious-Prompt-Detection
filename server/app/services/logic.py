@@ -69,8 +69,27 @@ class AnalyzeService:
             "risk_score": risk_score,
             "action": action,
             "process_time_ms": process_time,
-            "log_data": log
+            "log_data": log,
+            "model_type": model_type
         }
+
+    async def process_xai_and_log(self, log_data: DetectionLog, model_type: int):
+        import asyncio
+        from app.core.ai_core import analyze_prompt_xai
+        
+        # risk_score가 50 초과 (즉, 악성)일 때만 XAI 실행
+        if log_data.risk_score_pct > 50:
+            loop = asyncio.get_running_loop()
+            # XAI 분석은 CPU 바운드이므로 executor에서 실행
+            highlights = await loop.run_in_executor(
+                None, 
+                analyze_prompt_xai, 
+                log_data.raw_prompt, 
+                model_type
+            )
+            log_data.xai_highlights = highlights
+            
+        await self.log_repo.create(log_data)
 
 import secrets
 
@@ -88,7 +107,8 @@ class APIKeyManagementService:
                 "risk_score": log.risk_score_pct,
                 "action": log.action_taken,
                 "process_time_ms": log.process_time_ms,
-                "created_at": log.created_at
+                "created_at": log.created_at,
+                "xai_highlights": log.xai_highlights
             } for log in logs
         ]
 
