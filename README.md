@@ -41,7 +41,6 @@
    - **프론트엔드**: [http://localhost](http://localhost)
    - **백엔드 API**: [http://localhost:8000](http://localhost:8000)
    - **API 문서 (Swagger)**: [http://localhost:8000/docs](http://localhost:8000/docs)
-   - **B2B API 명세서**: 프로젝트 루트의 [`API_SPEC.md`](./API_SPEC.md) 파일을 참고하세요.
 
 ### 서비스 구성
 
