@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Header
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Header, Request
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
@@ -7,6 +7,39 @@ from app.services.logic import AuthService, AnalyzeService, APIKeyManagementServ
 from jose import JWTError, jwt
 from pydantic import BaseModel, EmailStr
 from typing import Optional
+import logging
+import time
+import redis.asyncio as redis
+import os
+
+_log = logging.getLogger("api")
+
+# demo 엔드포인트 IP 기반 Rate Limit
+_redis = redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6380/0"), decode_responses=True)
+DEMO_TPS_LIMIT   = 5    # IP당 초당 5번
+DEMO_DAILY_LIMIT = 100  # IP당 하루 100번
+
+async def check_demo_rate_limit(request: Request):
+    ip = request.client.host
+    now = int(time.time())
+    tps_key   = f"demo_tps:{ip}:{now}"
+    daily_key = f"demo_daily:{ip}:{time.strftime('%Y%m%d')}"
+    try:
+        tps = await _redis.incr(tps_key)
+        if tps == 1:
+            await _redis.expire(tps_key, 1)
+        if tps > DEMO_TPS_LIMIT:
+            raise HTTPException(status_code=429, detail="요청이 너무 많습니다. 잠시 후 다시 시도해주세요.")
+
+        daily = await _redis.incr(daily_key)
+        if daily == 1:
+            await _redis.expire(daily_key, 86400)
+        if daily > DEMO_DAILY_LIMIT:
+            raise HTTPException(status_code=429, detail="일일 데모 한도를 초과했습니다.")
+    except HTTPException:
+        raise
+    except Exception:
+        pass  # Redis 장애 시 통과
 
 router = APIRouter()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="users/login")
@@ -99,20 +132,43 @@ async def delete_api_key(key_id: int, user_id: int = Depends(get_current_user), 
         raise HTTPException(status_code=404, detail="API Key not found")
     return {"message": "API Key deleted"}
 
+class PromptSanitizeRequest(BaseModel):
+    prompt: str
+    model: str = "intfloat/multilingual-e5-small"
+
 class PromptAnalysisDemoRequest(BaseModel):
     prompt: str
     model: str = "intfloat/multilingual-e5-small"
 
-@router.post("/v1/analyze/demo")
-async def analyze_demo(request: PromptAnalysisDemoRequest):
-    import time
-    from app.core.ai_core import analyze_prompt_threat
-    
-    start_time = time.time()
+@router.post("/v1/sanitize")
+async def sanitize(
+    request: PromptSanitizeRequest,
+    x_api_key: str = Header(...),
+    db: AsyncSession = Depends(get_db),
+):
+    service = AnalyzeService(db)
     model_type = 1 if "large" in request.model.lower() else 0
-    is_malicious, risk_score = analyze_prompt_threat(request.prompt, model_type=model_type)
-    process_time = int((time.time() - start_time) * 1000)
-    
+    result = await service.sanitize_prompt(x_api_key, request.prompt, model_type)
+
+    if "error" in result:
+        raise HTTPException(status_code=result["status"], detail=result["error"])
+
+    return result
+
+@router.post("/v1/analyze/demo")
+async def analyze_demo(
+    request: Request,
+    body: PromptAnalysisDemoRequest,
+    _: None = Depends(check_demo_rate_limit),
+):
+    from app.core.ai_core import analyze_prompt_threat
+    model_type = 1 if "large" in body.model.lower() else 0
+    model_name = "large" if model_type == 1 else "small"
+    _log.info(f"[demo] 요청 수신 — IP: {request.client.host}  모델: e5-{model_name}  프롬프트: {body.prompt[:50]}...")
+    t0 = time.time()
+    is_malicious, risk_score = analyze_prompt_threat(body.prompt, model_type=model_type)
+    process_time = int((time.time() - t0) * 1000)
+    _log.info(f"[demo] 완료 — {'악성' if is_malicious else '정상'} (위험도: {risk_score}%)  [{process_time}ms]")
     return {
         "safe": not is_malicious,
         "score": risk_score / 100.0,

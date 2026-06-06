@@ -7,6 +7,9 @@ from app.core.ai_core import analyze_prompt_threat
 import time
 import hashlib
 import uuid
+import logging
+
+logger = logging.getLogger("sanitize")
 
 class AuthService:
     def __init__(self, db: AsyncSession):
@@ -30,28 +33,35 @@ class AnalyzeService:
 
     async def analyze_prompt(self, api_key_str: str, prompt: str, model_type: int = 0):
         start_time = time.time()
-        
+        model_name = "large" if model_type == 1 else "small"
+        logger.info(f"[analyze] 요청 수신 — 모델: e5-{model_name}  프롬프트: {prompt[:50]}...")
+
         # 1. API Key Validation
+        logger.info("[analyze] [1/3] API 키 검증 중...")
         key_hash = hashlib.sha256(api_key_str.encode()).hexdigest()
         api_key = await self.key_repo.get_by_hash(key_hash)
         if not api_key:
+            logger.warning("[analyze] API 키 인증 실패")
             return {"error": "Invalid API Key", "status": 401}
 
         # 2. Rate Limiting
+        logger.info("[analyze] [2/3] Rate limit 확인 중...")
         from sqlalchemy.future import select
         from app.models.domain import User
         user_result = await self.key_repo.db.execute(select(User).where(User.user_id == api_key.user_id))
         user = user_result.scalars().first()
-        
+
         if not await RateLimiter.check_limits(user.user_id, user.tps_limit, user.daily_quota):
+            logger.warning("[analyze] Rate limit 초과")
             return {"error": "Rate limit exceeded", "status": 429}
 
-        # 3. Content Analysis (Integrated with AI Developer's function)
+        # 3. Content Analysis
+        logger.info("[analyze] [3/3] 악성 여부 탐지 중...")
+        t0 = time.time()
         is_malicious, risk_score = analyze_prompt_threat(prompt, model_type=model_type)
-        
-        # Determine action based on boolean result from AI
         action = "blocked" if is_malicious else "allowed"
         process_time = int((time.time() - start_time) * 1000)
+        logger.info(f"[analyze] 탐지 완료 — {'악성' if is_malicious else '정상'} (위험도: {risk_score}%)  [{time.time()-t0:.2f}s]  → {action}")
 
         # 4. Asynchronous Logging
         used_track = "large" if model_type == 1 else "small"
@@ -71,6 +81,70 @@ class AnalyzeService:
             "process_time_ms": process_time,
             "log_data": log,
             "model_type": model_type
+        }
+
+    async def sanitize_prompt(self, api_key_str: str, prompt: str, model_type: int = 0):
+        import asyncio
+        from app.core.ai_core import analyze_prompt_xai, sanitize_prompt_with_llm
+
+        key_hash = hashlib.sha256(api_key_str.encode()).hexdigest()
+        api_key = await self.key_repo.get_by_hash(key_hash)
+        if not api_key:
+            return {"error": "Invalid API Key", "status": 401}
+
+        # [1단계] 악성 여부 탐지
+        logger.info("[1/4] 악성 여부 탐지 중...")
+        t0 = time.time()
+        is_malicious, risk_score = analyze_prompt_threat(prompt, model_type)
+        logger.info(f"[1/4] 탐지 완료 — {'악성' if is_malicious else '정상'} (위험도 {risk_score}%) [{time.time()-t0:.2f}s]")
+
+        if not is_malicious:
+            logger.info("[완료] 이미 정상 프롬프트 — sanitize 불필요")
+            return {
+                "original_prompt": prompt,
+                "is_malicious": False,
+                "risk_score": risk_score,
+                "sanitized_prompt": prompt,
+                "sanitized_is_malicious": False,
+                "sanitized_risk_score": risk_score,
+                "sanitize_success": True,
+                "already_safe": True,
+            }
+
+        # [2단계] XAI — 악성 핵심 단어 선정
+        logger.info("[2/4] XAI 분석 중 — 악성 기여 단어 추출...")
+        t0 = time.time()
+        loop = asyncio.get_running_loop()
+        highlights = await loop.run_in_executor(None, analyze_prompt_xai, prompt, model_type)
+        flagged_words = [h["text"] for h in highlights if h["weight"] > 0.1]
+        logger.info(f"[2/4] XAI 완료 — 악성 단어: {flagged_words} [{time.time()-t0:.2f}s]")
+
+        # [3단계] LLM — 악성 부분을 정상으로 변환
+        logger.info("[3/4] LLM 변환 중 — OpenRouter API 호출...")
+        t0 = time.time()
+        sanitized = await sanitize_prompt_with_llm(prompt, highlights)
+        logger.info(f"[3/4] LLM 변환 완료 [{time.time()-t0:.2f}s]")
+        logger.info(f"[3/4] 변환 결과: {sanitized}")
+
+        # [4단계] 변환된 프롬프트 재검증
+        logger.info("[4/4] 변환 결과 재검증 중...")
+        t0 = time.time()
+        sanitized_is_malicious, sanitized_risk_score = await loop.run_in_executor(
+            None, analyze_prompt_threat, sanitized, model_type
+        )
+        logger.info(f"[4/4] 재검증 완료 — {'악성' if sanitized_is_malicious else '정상'} (위험도 {sanitized_risk_score}%) [{time.time()-t0:.2f}s]")
+        logger.info(f"[완료] sanitize {'성공' if not sanitized_is_malicious else '실패'} — {risk_score}% → {sanitized_risk_score}%")
+
+        return {
+            "original_prompt": prompt,
+            "is_malicious": is_malicious,
+            "risk_score": risk_score,
+            "xai_highlights": highlights,
+            "sanitized_prompt": sanitized,
+            "sanitized_is_malicious": sanitized_is_malicious,
+            "sanitized_risk_score": sanitized_risk_score,
+            "sanitize_success": not sanitized_is_malicious,
+            "already_safe": False,
         }
 
     async def process_xai_and_log(self, log_data: DetectionLog, model_type: int):

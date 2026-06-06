@@ -10,10 +10,13 @@ import torch
 torch.set_num_threads(_N_THREADS)
 
 import pickle
+import logging
 import numpy as np
 from pathlib import Path
 from typing import Tuple, Dict, Any
 from sentence_transformers import SentenceTransformer
+
+_log = logging.getLogger("detector")
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
@@ -26,14 +29,12 @@ MODEL_CONFIG = {
     0: {
         "name": "small",
         "embed_model": "intfloat/multilingual-e5-small",
-        "onnx_dir":    ARTIFACTS_DIR / "onnx" / "e5-small",
         "clf_path":    ARTIFACTS_DIR / "small" / "detector_model.pkl",
         "intent_cache": ARTIFACTS_DIR / "small" / "intent_features.npy",
     },
     1: {
         "name": "large",
         "embed_model": "intfloat/multilingual-e5-large",
-        "onnx_dir":    ARTIFACTS_DIR / "onnx" / "e5-large",
         "clf_path":    ARTIFACTS_DIR / "large" / "detector_model_large.pkl",
         "intent_cache": ARTIFACTS_DIR / "large" / "intent_features.npy",
     }
@@ -42,50 +43,11 @@ MODEL_CONFIG = {
 MAX_SEQ_LENGTH = 256
 
 
-class ONNXEmbedder:
-    """ONNX Runtime 기반 임베더 — SentenceTransformer.encode()와 동일한 인터페이스."""
-
-    def __init__(self, model_dir: Path, max_seq_length: int = MAX_SEQ_LENGTH):
-        import onnxruntime as ort
-        from transformers import AutoTokenizer
-
-        self.tokenizer = AutoTokenizer.from_pretrained(model_dir)
-        self.session = ort.InferenceSession(
-            str(model_dir / "model_quantized.onnx"),
-            providers=["CPUExecutionProvider"],
-        )
-        self.max_seq_length = max_seq_length
-
-    def encode(self, texts, show_progress_bar=False):
-        enc = self.tokenizer(
-            texts,
-            padding=True,
-            truncation=True,
-            max_length=self.max_seq_length,
-            return_tensors="np",
-        )
-        required = {inp.name for inp in self.session.get_inputs()}
-        inputs = {k: v for k, v in enc.items() if k in required}
-        if "token_type_ids" in required and "token_type_ids" not in inputs:
-            inputs["token_type_ids"] = np.zeros_like(inputs["input_ids"])
-        outputs = self.session.run(None, inputs)
-        token_emb = outputs[0]                                              # (B, seq, dim)
-        mask = enc["attention_mask"][:, :, np.newaxis].astype(np.float32)
-        emb = (token_emb * mask).sum(axis=1) / mask.sum(axis=1).clip(min=1e-9)
-        return emb / np.linalg.norm(emb, axis=1, keepdims=True).clip(min=1e-9)
-
-
 def _build_embedder(config: dict):
-    """ONNX 모델이 있으면 ONNXEmbedder, 없으면 SentenceTransformer로 폴백."""
-    onnx_model = config["onnx_dir"] / "model_quantized.onnx"
-    if onnx_model.exists():
-        print(f"  → ONNX Runtime (INT8) 사용: {onnx_model}")
-        return ONNXEmbedder(config["onnx_dir"])
-    else:
-        print(f"  → SentenceTransformer (PyTorch) 사용 (ONNX 없음)")
-        embedder = SentenceTransformer(config["embed_model"])
-        embedder.max_seq_length = MAX_SEQ_LENGTH
-        return embedder
+    embedder = SentenceTransformer(config["embed_model"])
+    embedder.max_seq_length = MAX_SEQ_LENGTH
+    print(f"  → SentenceTransformer (PyTorch) 사용: {config['embed_model']}")
+    return embedder
 
 
 class MaliciousPromptDetector:
@@ -103,16 +65,15 @@ class MaliciousPromptDetector:
             if not config["clf_path"].exists():
                 raise FileNotFoundError(f"모델 파일을 찾을 수 없습니다: {config['clf_path']}")
 
-            print(f"[{config['name']}] 리소스 로딩 중...")
-
+            _log.info(f"[모델 로딩] {config['name']} — 분류기 로드 중...")
             with open(config["clf_path"], "rb") as f:
                 self._models[model_type] = pickle.load(f)
-
+            _log.info(f"[모델 로딩] {config['name']} — 임베딩 모델 로드 중...")
             self._embedders[model_type] = _build_embedder(config)
 
             self._use_intent[model_type] = config["intent_cache"].exists()
-            status = "Intent 피처 적용" if self._use_intent[model_type] else "⚠ Intent 피처 미적용 (임베딩 전용)"
-            print(f"[{config['name']}] 로드 완료. {status}")
+            status = "Intent 피처 적용" if self._use_intent[model_type] else "Intent 피처 미적용"
+            _log.info(f"[모델 로딩] {config['name']} 로드 완료 — {status}")
 
         return self._embedders[model_type], self._models[model_type], self._use_intent[model_type]
 
@@ -135,6 +96,8 @@ class MaliciousPromptDetector:
 
     def analyze(self, prompt: str, model_type: int = 0) -> Tuple[bool, int]:
         try:
+            model_name = MODEL_CONFIG.get(model_type, {}).get("name", str(model_type))
+            _log.info(f"[탐지] 임베딩 생성 중... (모델: e5-{model_name})")
             embedder, classifier, use_intent = self._load_resources(model_type)
 
             formatted_prompt = f"query: {prompt}"
@@ -151,9 +114,9 @@ class MaliciousPromptDetector:
                 has_jailbreak = intent_feat[0][10]
 
                 if (has_defensive or has_research) and not has_target:
-                    threshold = 0.87
+                    threshold = 0.92
                 elif has_edu and not has_attack and not has_target and not has_jailbreak:
-                    threshold = 0.87
+                    threshold = 0.92
                 else:
                     threshold = 0.58
             else:
@@ -185,7 +148,8 @@ class MaliciousPromptDetector:
             risk_score = int(prob * 100)
 
             # ── 공격/jailbreak 패턴 명시 감지 시 강제 악성 처리 ──────────
-            if use_intent and has_attack:
+            # 방어/연구 맥락 + 특정 타겟 없음 → 모의해킹 등 정상 문맥이므로 강제 악성 제외
+            if use_intent and has_attack and not (has_defensive and not has_target):
                 is_malicious = True
                 risk_score = max(risk_score, 70)
             elif use_intent and has_jailbreak and prob >= 0.40:
@@ -197,20 +161,25 @@ class MaliciousPromptDetector:
             return is_malicious, risk_score
 
         except Exception as e:
-            print(f"분석 중 오류 발생: {e}")
-            # 에러 발생 시 안전하게 '정상'으로 처리하거나 예외를 던질 수 있음
-            return False, 0
+            _log.error(f"[탐지] 오류 발생: {e}")
+            # fail closed: 오류 시 악성으로 처리해 악성 프롬프트 통과를 방지
+            raise RuntimeError(f"프롬프트 분석 중 오류 발생: {e}") from e
 
     def analyze_xai_explain(self, prompt: str, model_type: int = 0):
         try:
             import shap
-            embedder, classifier, _ = self._load_resources(model_type)
-            
+            _log.info("[XAI] SHAP 분석 시작 — 악성 기여 단어 추출 중...")
+            embedder, classifier, use_intent = self._load_resources(model_type)
+
             def prediction_function(texts):
                 formatted_texts = [f"query: {t}" for t in texts]
                 embeddings = embedder.encode(formatted_texts, show_progress_bar=False)
-                probs = classifier.predict(embeddings)
-                return probs
+                if use_intent:
+                    intent = np.array([extract_intent_single(t) for t in texts], dtype=np.float32)
+                    feat = np.concatenate([embeddings, intent], axis=1)
+                else:
+                    feat = embeddings
+                return classifier.predict(feat)
 
             # shap_values.data[0] contains tokens, shap_values.values[0] contains SHAP weights
             explainer = shap.Explainer(prediction_function, shap.maskers.Text(r"\W"))
@@ -222,20 +191,22 @@ class MaliciousPromptDetector:
             
             for t, w in zip(tokens, weights):
                 highlights.append({"text": str(t), "weight": float(w)})
-                
+
+            top = sorted(highlights, key=lambda x: -x["weight"])[:5]
+            _log.info(f"[XAI] 분석 완료 — 상위 단어: {[h['text'].strip() for h in top if h['weight'] > 0.05]}")
             return highlights
         except Exception as e:
-            print(f"XAI 분석 중 오류 발생: {e}")
+            _log.error(f"[XAI] 오류 발생: {e}")
             return []
 
     def preload_models(self):
-        print("모델 프리로딩 시작...")
+        _log.info("[모델 로딩] 프리로딩 시작 (small + large)...")
         for model_type in [0, 1]:
             embedder, _, _ = self._load_resources(model_type)
             # JIT 워밍업
             for _ in range(3):
                 embedder.encode(["query: warmup"], show_progress_bar=False)
-        print("모든 모델 프리로딩 완료.")
+        _log.info("[모델 로딩] 프리로딩 완료 — 모든 모델 준비됨")
 
 
 _detector_instance = MaliciousPromptDetector()

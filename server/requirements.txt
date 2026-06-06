@@ -15,7 +15,6 @@ lightgbm
 xgboost
 numpy
 scikit-learn
-onnxruntime
 transformers
-optimum[onnxruntime]
 shap
+openai

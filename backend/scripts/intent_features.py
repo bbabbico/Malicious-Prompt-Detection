@@ -74,7 +74,7 @@ _ATTACK_VERBS_EN = [
     r'(exploit|attack|compromise|breach)\s+(this|the|a|an|that)',
     r'(create|write|make|generate|code).{0,10}(malware|virus|ransomware|trojan|exploit|payload|keylogger)',
     r'(steal|grab|extract|exfiltrate)\s+(password|credential|token|data|info)',
-    r'(launch|perform|execute|run)\s+(ddos|dos|attack|exploit)',
+    r'(launch|perform|execute|run).{0,5}(ddos|dos\b|attack|exploit)',
     r'(bypass|disable|turn off)\s+(security|firewall|antivirus|filter|detection)',
     r'(get|gain)\s+(unauthorized|illegal)\s+access',
     # sql injection: 단순 언급이 아닌 실행/수행 의도가 있는 경우만
