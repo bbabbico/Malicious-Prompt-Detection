@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Header, Request
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Header, Request, Query
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
@@ -63,12 +63,18 @@ class UserAuth(BaseModel):
     email: EmailStr
     password: str
 
+from pydantic import BaseModel, EmailStr, Field
+
+# ...
+
 class PromptAnalysisRequest(BaseModel):
-    prompt: str
-    model: str = "intfloat/multilingual-e5-small"
+    prompt: str = Field(..., description="분석할 원본 텍스트 프롬프트")
+    model: str = Field("intfloat/multilingual-e5-small", description="사용할 AI 모델 버전 (small/large)")
+    include_xai: bool = Field(False, description="XAI(설명 가능한 AI) 결과를 포함할지 여부 (위험 단어 가중치 배열 반환)")
+    include_sanitized: bool = Field(False, description="LLM을 활용한 순화된(Sanitized) 프롬프트를 포함할지 여부")
 
 class APIKeyCreateRequest(BaseModel):
-    name: str
+    name: str = Field(..., description="생성할 API 키의 식별용 이름")
 
 @router.post("/users/signup")
 async def signup(user_data: UserAuth, db: AsyncSession = Depends(get_db)):
@@ -133,12 +139,14 @@ async def delete_api_key(key_id: int, user_id: int = Depends(get_current_user), 
     return {"message": "API Key deleted"}
 
 class PromptSanitizeRequest(BaseModel):
-    prompt: str
-    model: str = "intfloat/multilingual-e5-small"
+    prompt: str = Field(..., description="순화할 원본 텍스트 프롬프트")
+    model: str = Field("intfloat/multilingual-e5-small", description="사용할 AI 모델 버전")
 
 class PromptAnalysisDemoRequest(BaseModel):
-    prompt: str
-    model: str = "intfloat/multilingual-e5-small"
+    prompt: str = Field(..., description="테스트용 원본 텍스트 프롬프트")
+    model: str = Field("intfloat/multilingual-e5-small", description="사용할 AI 모델 버전")
+    include_xai: bool = Field(False, description="XAI 결과 포함 여부")
+    include_sanitized: bool = Field(False, description="순화된 프롬프트 포함 여부")
 
 @router.post("/v1/sanitize")
 async def sanitize(
@@ -169,22 +177,42 @@ async def analyze_demo(
     is_malicious, risk_score = analyze_prompt_threat(body.prompt, model_type=model_type)
     process_time = int((time.time() - t0) * 1000)
     _log.info(f"[demo] 완료 — {'악성' if is_malicious else '정상'} (위험도: {risk_score}%)  [{process_time}ms]")
-    return {
+    response = {
         "safe": not is_malicious,
         "score": risk_score / 100.0,
         "processingTime": process_time
     }
+    
+    if (body.include_xai or body.include_sanitized) and is_malicious:
+        import asyncio
+        from app.core.ai_core import analyze_prompt_xai
+        loop = asyncio.get_running_loop()
+        highlights = await loop.run_in_executor(None, analyze_prompt_xai, body.prompt, model_type)
+        if body.include_xai:
+            response["xai_highlights"] = highlights
+        if body.include_sanitized:
+            from app.core.ai_core import sanitize_prompt_with_llm
+            sanitized = await sanitize_prompt_with_llm(body.prompt, highlights, model_type=model_type, max_retries=5)
+            response["sanitized_prompt"] = sanitized
 
-@router.post("/v1/analyze")
+    return response
+
+@router.post("/v1/analyze", summary="프롬프트 위협 분석 (B2B)", tags=["AI Analysis"], description="API 키를 사용하여 프롬프트의 악성 여부를 판단하고, 옵션에 따라 XAI 결과 및 순화된 텍스트를 반환합니다.")
 async def analyze(
     request: PromptAnalysisRequest,
     background_tasks: BackgroundTasks,
-    x_api_key: str = Header(...),
+    x_api_key: str = Header(..., description="발급받은 B2B 전용 API 키 (pg-sk-...)"),
     db: AsyncSession = Depends(get_db)
 ):
     service = AnalyzeService(db)
     model_type = 1 if "large" in request.model.lower() else 0
-    result = await service.analyze_prompt(x_api_key, request.prompt, model_type)
+    result = await service.analyze_prompt(
+        x_api_key, 
+        request.prompt, 
+        model_type, 
+        include_xai=request.include_xai, 
+        include_sanitized=request.include_sanitized
+    )
     
     if "error" in result:
         raise HTTPException(status_code=result["status"], detail=result["error"])
@@ -194,4 +222,17 @@ async def analyze(
     model_type = result.pop("model_type")
     background_tasks.add_task(service.process_xai_and_log, log_data, model_type)
     
+    return result
+
+@router.get("/v1/logs", summary="탐지 로그 조회 (B2B)", tags=["AI Analysis"], description="API 키를 사용하여 해당 키로 발생한 과거의 탐지 및 순화 로그 내역을 조회합니다.")
+async def get_api_logs(
+    limit: int = Query(50, description="가져올 로그의 최대 개수"),
+    offset: int = Query(0, description="페이징 오프셋"),
+    x_api_key: str = Header(..., description="발급받은 B2B 전용 API 키"),
+    db: AsyncSession = Depends(get_db)
+):
+    service = AnalyzeService(db)
+    result = await service.get_logs_by_api_key(x_api_key, limit, offset)
+    if isinstance(result, dict) and "error" in result:
+        raise HTTPException(status_code=result["status"], detail=result["error"])
     return result

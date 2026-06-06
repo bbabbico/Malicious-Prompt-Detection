@@ -29,10 +29,6 @@ const Dashboard: React.FC = () => {
             <h3>평균 응답 속도</h3>
             <div style={{ fontSize: '24px', fontWeight: 'bold' }}>{stats.avg_response_time_ms || 0}ms</div>
           </div>
-          <div className="card">
-            <h3>탐지 정확도</h3>
-            <div style={{ fontSize: '24px', fontWeight: 'bold', color: 'var(--success-color)' }}>{stats.detection_success_rate}%</div>
-          </div>
         </div>
       ) : (
         <div>통계를 불러오는 중...</div>

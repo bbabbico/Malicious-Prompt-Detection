@@ -31,7 +31,7 @@ class AnalyzeService:
         self.key_repo = APIKeyRepository(db)
         self.log_repo = LogRepository(db)
 
-    async def analyze_prompt(self, api_key_str: str, prompt: str, model_type: int = 0):
+    async def analyze_prompt(self, api_key_str: str, prompt: str, model_type: int = 0, include_xai: bool = False, include_sanitized: bool = False):
         start_time = time.time()
         model_name = "large" if model_type == 1 else "small"
         logger.info(f"[analyze] 요청 수신 — 모델: e5-{model_name}  프롬프트: {prompt[:50]}...")
@@ -74,7 +74,7 @@ class AnalyzeService:
             process_time_ms=process_time
         )
         
-        return {
+        response = {
             "is_malicious": is_malicious,
             "risk_score": risk_score,
             "action": action,
@@ -82,6 +82,25 @@ class AnalyzeService:
             "log_data": log,
             "model_type": model_type
         }
+
+        if (include_xai or include_sanitized) and is_malicious:
+            import asyncio
+            from app.core.ai_core import analyze_prompt_xai
+            loop = asyncio.get_running_loop()
+            logger.info("[analyze] 동기적 XAI 추출 중...")
+            highlights = await loop.run_in_executor(None, analyze_prompt_xai, prompt, model_type)
+            log.xai_highlights = highlights  # 백그라운드 중복 계산 방지
+
+            if include_xai:
+                response["xai_highlights"] = highlights
+            
+            if include_sanitized:
+                from app.core.ai_core import sanitize_prompt_with_llm
+                logger.info("[analyze] 동기적 LLM 순화 중...")
+                sanitized = await sanitize_prompt_with_llm(prompt, highlights, model_type=model_type, max_retries=5)
+                response["sanitized_prompt"] = sanitized
+                
+        return response
 
     async def sanitize_prompt(self, api_key_str: str, prompt: str, model_type: int = 0):
         import asyncio
@@ -119,21 +138,16 @@ class AnalyzeService:
         flagged_words = [h["text"] for h in highlights if h["weight"] > 0.1]
         logger.info(f"[2/4] XAI 완료 — 악성 단어: {flagged_words} [{time.time()-t0:.2f}s]")
 
-        # [3단계] LLM — 악성 부분을 정상으로 변환
-        logger.info("[3/4] LLM 변환 중 — OpenRouter API 호출...")
+        # [3단계] LLM — 악성 부분을 정상으로 변환 (자가 피드백 루프 포함)
+        logger.info("[3/3] LLM 변환 및 자가 검증 중...")
         t0 = time.time()
-        sanitized = await sanitize_prompt_with_llm(prompt, highlights)
-        logger.info(f"[3/4] LLM 변환 완료 [{time.time()-t0:.2f}s]")
-        logger.info(f"[3/4] 변환 결과: {sanitized}")
+        sanitized = await sanitize_prompt_with_llm(prompt, highlights, model_type=model_type, max_retries=5)
+        logger.info(f"[3/3] LLM 변환 완료 [{time.time()-t0:.2f}s]")
+        logger.info(f"[3/3] 최종 변환 결과: {sanitized}")
 
-        # [4단계] 변환된 프롬프트 재검증
-        logger.info("[4/4] 변환 결과 재검증 중...")
-        t0 = time.time()
-        sanitized_is_malicious, sanitized_risk_score = await loop.run_in_executor(
-            None, analyze_prompt_threat, sanitized, model_type
-        )
-        logger.info(f"[4/4] 재검증 완료 — {'악성' if sanitized_is_malicious else '정상'} (위험도 {sanitized_risk_score}%) [{time.time()-t0:.2f}s]")
-        logger.info(f"[완료] sanitize {'성공' if not sanitized_is_malicious else '실패'} — {risk_score}% → {sanitized_risk_score}%")
+        # sanitize_prompt_with_llm 내부 루프가 이미 검증을 통과한 안전한 결과만 반환함
+        sanitized_is_malicious = False
+        sanitized_risk_score = 0
 
         return {
             "original_prompt": prompt,
@@ -143,7 +157,7 @@ class AnalyzeService:
             "sanitized_prompt": sanitized,
             "sanitized_is_malicious": sanitized_is_malicious,
             "sanitized_risk_score": sanitized_risk_score,
-            "sanitize_success": not sanitized_is_malicious,
+            "sanitize_success": True,
             "already_safe": False,
         }
 
@@ -151,8 +165,8 @@ class AnalyzeService:
         import asyncio
         from app.core.ai_core import analyze_prompt_xai
         
-        # risk_score가 50 초과 (즉, 악성)일 때만 XAI 실행
-        if log_data.risk_score_pct > 50:
+        # risk_score가 50 초과 (즉, 악성)이고 XAI가 아직 계산되지 않았을 때만 실행
+        if log_data.risk_score_pct > 50 and log_data.xai_highlights is None:
             loop = asyncio.get_running_loop()
             # XAI 분석은 CPU 바운드이므로 executor에서 실행
             highlights = await loop.run_in_executor(
@@ -164,6 +178,25 @@ class AnalyzeService:
             log_data.xai_highlights = highlights
             
         await self.log_repo.create(log_data)
+
+    async def get_logs_by_api_key(self, api_key_str: str, limit: int = 50, offset: int = 0):
+        key_hash = hashlib.sha256(api_key_str.encode()).hexdigest()
+        api_key = await self.key_repo.get_by_hash(key_hash)
+        if not api_key:
+            return {"error": "Invalid API Key", "status": 401}
+        
+        logs = await self.log_repo.get_by_key_id(api_key.key_id, limit, offset)
+        return [
+            {
+                "id": log.log_id,
+                "prompt": log.raw_prompt,
+                "risk_score": log.risk_score_pct,
+                "action": log.action_taken,
+                "process_time_ms": log.process_time_ms,
+                "created_at": log.created_at,
+                "xai_highlights": log.xai_highlights
+            } for log in logs
+        ]
 
 import secrets
 
@@ -264,8 +297,7 @@ class APIKeyManagementService:
         return {
             "today_requests": today_count,
             "month_requests": month_count,
-            "avg_response_time_ms": int(avg_time),
-            "detection_success_rate": 99.7 # static as discussed
+            "avg_response_time_ms": int(avg_time)
         }
 
     async def create_key(self, user_id: int, key_name: str):

@@ -59,3 +59,11 @@ class LogRepository:
         ).order_by(DetectionLog.created_at.desc()).limit(limit).offset(offset)
         result = await self.db.execute(stmt)
         return result.scalars().all()
+
+    async def get_by_key_id(self, key_id: int, limit: int = 50, offset: int = 0):
+        from sqlalchemy.future import select
+        stmt = select(DetectionLog).where(
+            DetectionLog.key_id == key_id
+        ).order_by(DetectionLog.created_at.desc()).limit(limit).offset(offset)
+        result = await self.db.execute(stmt)
+        return result.scalars().all()
