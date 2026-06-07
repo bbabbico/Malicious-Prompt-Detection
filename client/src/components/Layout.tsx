@@ -1,5 +1,5 @@
 import React from 'react';
-import { Outlet, Link, useNavigate } from 'react-router-dom';
+import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 
 const Layout: React.FC = () => {
@@ -13,26 +13,50 @@ const Layout: React.FC = () => {
 
   return (
     <div className="container">
-      <header className="flex gap-2 mb-2" style={{ borderBottom: '1px solid var(--border-color)', paddingBottom: '16px', alignItems: 'center' }}>
-        <div style={{ fontWeight: 'bold', fontSize: '18px' }}>악성 프롬프트 탐지 시스템</div>
-        <nav className="flex gap-2" style={{ marginLeft: 'auto' }}>
-          <Link to="/">홈 (테스트)</Link>
-          {isAuthenticated ? (
-            <>
-              <Link to="/dashboard">대시보드</Link>
-              <Link to="/keys">API 키 관리</Link>
-              <Link to="/logs">탐지 로그</Link>
-              <Link to="/docs">API 문서</Link>
-              <button onClick={handleLogout} style={{ padding: '4px 8px' }}>로그아웃</button>
-            </>
-          ) : (
-            <>
-              <Link to="/login">로그인</Link>
-              <Link to="/signup">회원가입</Link>
-            </>
-          )}
-        </nav>
+      <header style={{ borderBottom: '1px solid var(--border-color)', paddingBottom: '16px', marginBottom: '24px' }}>
+        <div className="flex gap-2" style={{ alignItems: 'center' }}>
+          <NavLink to="/" style={{ textDecoration: 'none' }}>
+            <div style={{ fontWeight: 800, fontSize: '16px', letterSpacing: '-0.02em', color: '#111' }}>
+              악성 프롬프트 탐지 시스템
+            </div>
+          </NavLink>
+
+          <nav className="flex gap-2" style={{ marginLeft: 'auto', alignItems: 'center' }}>
+            <NavLink to="/" end className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+              프롬프트
+            </NavLink>
+            {isAuthenticated ? (
+              <>
+                <NavLink to="/dashboard" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+                  대시보드
+                </NavLink>
+                <NavLink to="/keys" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+                  API 키
+                </NavLink>
+                <NavLink to="/logs" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+                  탐지 로그
+                </NavLink>
+                <NavLink to="/docs" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+                  API 문서
+                </NavLink>
+                <button onClick={handleLogout} style={{ padding: '5px 12px', fontSize: 13 }}>
+                  로그아웃
+                </button>
+              </>
+            ) : (
+              <>
+                <NavLink to="/docs" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+                  API 문서
+                </NavLink>
+                <NavLink to="/login" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+                  <button style={{ padding: '5px 12px', fontSize: 13 }}>로그인</button>
+                </NavLink>
+              </>
+            )}
+          </nav>
+        </div>
       </header>
+
       <main>
         <Outlet />
       </main>

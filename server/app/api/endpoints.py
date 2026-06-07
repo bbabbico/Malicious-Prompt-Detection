@@ -59,6 +59,17 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
     except JWTError:
         raise credentials_exception
 
+async def get_optional_user(authorization: Optional[str] = Header(None)) -> Optional[int]:
+    """로그인 여부와 무관하게 호출 가능. 로그인된 경우 user_id 반환, 아니면 None."""
+    if not authorization or not authorization.startswith("Bearer "):
+        return None
+    token = authorization.split(" ", 1)[1]
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return payload.get("user_id")
+    except Exception:
+        return None
+
 class UserAuth(BaseModel):
     email: EmailStr
     password: str
@@ -167,7 +178,10 @@ async def sanitize(
 async def analyze_demo(
     request: Request,
     body: PromptAnalysisDemoRequest,
+    background_tasks: BackgroundTasks,
     _: None = Depends(check_demo_rate_limit),
+    user_id: Optional[int] = Depends(get_optional_user),
+    db: AsyncSession = Depends(get_db),
 ):
     from app.core.ai_core import analyze_prompt_threat
     model_type = 1 if "large" in body.model.lower() else 0
@@ -182,18 +196,45 @@ async def analyze_demo(
         "score": risk_score / 100.0,
         "processingTime": process_time
     }
-    
-    if (body.include_xai or body.include_sanitized) and is_malicious:
+
+    computed_highlights = None
+    if body.include_xai or body.include_sanitized:
         import asyncio
         from app.core.ai_core import analyze_prompt_xai
         loop = asyncio.get_running_loop()
-        highlights = await loop.run_in_executor(None, analyze_prompt_xai, body.prompt, model_type)
+        computed_highlights = await loop.run_in_executor(None, analyze_prompt_xai, body.prompt, model_type)
+
         if body.include_xai:
-            response["xai_highlights"] = highlights
+            response["xai_highlights"] = computed_highlights
+
         if body.include_sanitized:
-            from app.core.ai_core import sanitize_prompt_with_llm
-            sanitized = await sanitize_prompt_with_llm(body.prompt, highlights, model_type=model_type, max_retries=5)
-            response["sanitized_prompt"] = sanitized
+            if not is_malicious:
+                response["sanitized_prompt"] = None
+            else:
+                try:
+                    from app.core.ai_core import sanitize_prompt_with_llm
+                    sanitized = await sanitize_prompt_with_llm(body.prompt, computed_highlights, model_type=model_type, max_retries=5)
+                    response["sanitized_prompt"] = sanitized
+                except Exception as e:
+                    _log.error(f"[demo] 순화 실패: {e}")
+                    response["sanitized_prompt"] = None
+
+    # 로그인 상태이면 내부 demo 키로 탐지 로그 DB 저장
+    if user_id is not None:
+        from app.models.domain import DetectionLog
+        service = AnalyzeService(db)
+        demo_key = await service.get_or_create_demo_key(user_id)
+        log = DetectionLog(
+            key_id=demo_key.key_id,
+            raw_prompt=body.prompt,
+            used_track=model_name,
+            risk_score_pct=float(risk_score),
+            action_taken="blocked" if is_malicious else "allowed",
+            process_time_ms=process_time,
+            xai_highlights=computed_highlights if body.include_xai else None,
+        )
+        background_tasks.add_task(service.process_xai_and_log, log, model_type)
+        _log.info(f"[demo] 로그인 사용자(user_id={user_id}) 로그 저장 예약")
 
     return response
 

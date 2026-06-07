@@ -161,6 +161,21 @@ class AnalyzeService:
             "already_safe": False,
         }
 
+    async def get_or_create_demo_key(self, user_id: int) -> "APIKey":
+        existing = await self.key_repo.get_demo_key_by_user_id(user_id)
+        if existing:
+            return existing
+        import hashlib, os
+        secret = os.getenv("DEMO_KEY_SECRET", "demo_internal_v1")
+        key_hash = hashlib.sha256(f"{secret}:{user_id}".encode()).hexdigest()
+        api_key = APIKey(
+            user_id=user_id,
+            key_name="__demo__",
+            key_prefix="demo-int",
+            key_hash=key_hash,
+        )
+        return await self.key_repo.create(api_key)
+
     async def process_xai_and_log(self, log_data: DetectionLog, model_type: int):
         import asyncio
         from app.core.ai_core import analyze_prompt_xai
@@ -229,6 +244,8 @@ class APIKeyManagementService:
         
         result_keys = []
         for k in keys:
+            if k.key_name == "__demo__":
+                continue
             # Query usage count for this key (this month)
             now = datetime.now(timezone.utc)
             start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)

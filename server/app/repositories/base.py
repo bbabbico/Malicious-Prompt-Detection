@@ -32,6 +32,12 @@ class APIKeyRepository:
         result = await self.db.execute(select(APIKey).where(APIKey.key_id == key_id, APIKey.user_id == user_id))
         return result.scalars().first()
 
+    async def get_demo_key_by_user_id(self, user_id: int):
+        result = await self.db.execute(
+            select(APIKey).where(APIKey.user_id == user_id, APIKey.key_name == "__demo__")
+        )
+        return result.scalars().first()
+
     async def delete(self, api_key: APIKey):
         await self.db.delete(api_key)
         await self.db.commit()
