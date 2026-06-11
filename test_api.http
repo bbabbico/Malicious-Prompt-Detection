@@ -2,7 +2,7 @@
 @baseUrl = http://localhost/api
 @email = testuser@example.com
 @password = secretpassword
-@apiKey = pg-sk-DsZUXKJmRuQfzS_z2uUSwocTanXIQ-Z_3ydTOOQYo-uU06HP
+@apiKey = pg-sk-W9eW0hux8bxZXJ6yEEOep7rUJ5Bl4NCauzS2a58Uhsn
 
 ### 1. Signup
 # @name signup
