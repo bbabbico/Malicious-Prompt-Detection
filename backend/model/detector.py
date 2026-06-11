@@ -189,8 +189,12 @@ class MaliciousPromptDetector:
             tokens = shap_values.data[0]
             weights = shap_values.values[0]
             
+            # 가장 큰 SHAP 가중치를 기준으로 정규화 (0.0 ~ 1.0)
+            max_w = max([float(w) for w in weights] + [0.0001])
+            
             for t, w in zip(tokens, weights):
-                highlights.append({"text": str(t), "weight": float(w)})
+                normalized_w = max(0.0, float(w) / max_w)
+                highlights.append({"text": str(t), "weight": normalized_w})
 
             top = sorted(highlights, key=lambda x: -x["weight"])[:5]
             _log.info(f"[XAI] 분석 완료 — 상위 단어: {[h['text'].strip() for h in top if h['weight'] > 0.05]}")

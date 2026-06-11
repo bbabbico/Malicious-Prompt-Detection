@@ -282,7 +282,7 @@ class APIKeyManagementService:
         from sqlalchemy.future import select
         from sqlalchemy import func
         from app.models.domain import DetectionLog, APIKey
-        from datetime import datetime, timezone
+        from datetime import datetime, timezone, timedelta
 
         now = datetime.now(timezone.utc)
         start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -311,10 +311,53 @@ class APIKeyManagementService:
         )
         avg_time = (await self.key_repo.db.execute(avg_time_stmt)).scalar() or 0
 
+        # Weekly counts
+        weekly_counts = []
+        for i in range(6, -1, -1):
+            day_start = (now - timedelta(days=i)).replace(hour=0, minute=0, second=0, microsecond=0)
+            day_end = day_start + timedelta(days=1)
+            
+            day_stmt = select(func.count(DetectionLog.log_id)).select_from(DetectionLog).join(APIKey).where(
+                APIKey.user_id == user_id,
+                DetectionLog.created_at >= day_start,
+                DetectionLog.created_at < day_end
+            )
+            count = (await self.key_repo.db.execute(day_stmt)).scalar() or 0
+            
+            if i == 0:
+                day_name = "오늘"
+            else:
+                day_name = ["월", "화", "수", "목", "금", "토", "일"][day_start.weekday()]
+            
+            weekly_counts.append({
+                "day": day_name,
+                "count": count
+            })
+
+        # Ratio
+        safe_stmt = select(func.count(DetectionLog.log_id)).select_from(DetectionLog).join(APIKey).where(
+            APIKey.user_id == user_id,
+            DetectionLog.risk_score_pct <= 50
+        )
+        safe_count = (await self.key_repo.db.execute(safe_stmt)).scalar() or 0
+        
+        malicious_stmt = select(func.count(DetectionLog.log_id)).select_from(DetectionLog).join(APIKey).where(
+            APIKey.user_id == user_id,
+            DetectionLog.risk_score_pct > 50
+        )
+        malicious_count = (await self.key_repo.db.execute(malicious_stmt)).scalar() or 0
+        
+        ratio = [
+            {"name": "안전", "value": safe_count},
+            {"name": "악성", "value": malicious_count}
+        ]
+
         return {
             "today_requests": today_count,
             "month_requests": month_count,
-            "avg_response_time_ms": int(avg_time)
+            "avg_response_time_ms": int(avg_time),
+            "weekly_counts": weekly_counts,
+            "ratio": ratio
         }
 
     async def create_key(self, user_id: int, key_name: str):
