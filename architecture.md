@@ -21,23 +21,59 @@
 백엔드 서버(FastAPI)는 관심사의 분리와 유지보수성 향상을 위해 **엄격한 계층형 아키텍처(Strict Layering)**를 채택하였으며, 도메인 주도 설계(DDD) 패턴을 참고하여 하위 계층으로의 단방향 의존성만을 허용합니다.
 
 ```mermaid
-graph TD
-    subgraph FastAPI Application
-        API[API Layer<br/>Endpoints, Pydantic]
-        SVC[Service Layer<br/>Business Logic, Transaction]
-        REPO[Repository Layer<br/>SQLAlchemy ORM]
-        CORE[Core Layer<br/>AI, Security, Config]
+flowchart TD
+    %% 스타일 정의
+    classDef comp fill:#f0f8ff,stroke:#4682b4,stroke-width:1px,color:#000,rx:5px,ry:5px;
+    classDef db fill:#e6e6fa,stroke:#483d8b,stroke-width:1px,color:#000;
+    classDef layerBox fill:transparent,stroke:#333,stroke-dasharray: 5 5,stroke-width:2px;
+
+    %% -------------------------------------
+    %% 1. 표현 계층 (가장 위)
+    %% -------------------------------------
+    subgraph Presentation [1. 표현 계층]
+        direction TB
+        WebUI["&lt;&lt;React, TypeScript&gt;&gt;<br/>웹 UI 컴포넌트"]:::comp
+        Nginx["&lt;&lt;Nginx&gt;&gt;<br/>리버스 프록시 컴포넌트"]:::comp
         
-        API -->|DTO / Validated Data| SVC
-        SVC -->|DB Query Request| REPO
-        SVC -->|AI Inference Request| CORE
-        REPO -->|Entity Data| SVC
-        SVC -->|Response DTO| API
-        
-        CORE -.->|Dependency Injection| API
-        CORE -.->|Dependency Injection| SVC
-        CORE -.->|Dependency Injection| REPO
+        WebUI -.->|HTTP 요청| Nginx
     end
+
+    %% -------------------------------------
+    %% 2. 비즈니스 계층 (중간)
+    %% -------------------------------------
+    subgraph Business [2. 비즈니스 계층]
+        direction TB
+        API["&lt;&lt;FastAPI Endpoints&gt;&gt;<br/>API 계층 컴포넌트"]:::comp
+        Logic["&lt;&lt;Service Logic&gt;&gt;<br/>애플리케이션 컴포넌트"]:::comp
+        AICore["&lt;&lt;AI Engine&gt;&gt;<br/>비즈니스 로직 컴포넌트"]:::comp
+        LLM["&lt;&lt;OpenRouter API&gt;&gt;<br/>외부 서비스 컴포넌트"]:::comp
+        
+        API -.->|데이터 유효성 검증| Logic
+        Logic -.->|AI 모델 추론| AICore
+        Logic -.->|프롬프트 순화 요청| LLM
+    end
+
+    %% -------------------------------------
+    %% 3. 데이터 계층 (가장 아래)
+    %% -------------------------------------
+    subgraph Data [3. 데이터 계층]
+        direction TB
+        Repo["&lt;&lt;SQLAlchemy&gt;&gt;<br/>데이터 접근 컴포넌트"]:::comp
+        CacheClient["&lt;&lt;Redis-py&gt;&gt;<br/>캐시 클라이언트 컴포넌트"]:::comp
+        MySQL[("데이터베이스<br/>(MySQL)")]:::db
+        Redis[("인메모리 DB<br/>(Redis)")]:::db
+        
+        Repo -.->|SQL 쿼리| MySQL
+        CacheClient -.->|키-값 조회| Redis
+    end
+
+    %% 레이어 간의 연결 (위에서 아래로 흐름 강제)
+    Nginx -.->|프록시 전달| API
+    Logic -.->|CRUD 작업| Repo
+    Logic -.->|조회 / 저장| CacheClient
+
+    %% 서브그래프 테두리 스타일 지정
+    class Presentation,Business,Data layerBox;
 ```
 
 * **API Layer (`app/api/endpoints.py`)**
@@ -61,30 +97,74 @@ graph TD
 전체 시스템은 고가용성 및 대규모 트래픽 처리를 위한 다층 방어(Defense in Depth) 전략 기반의 컨테이너(Docker) 마이크로서비스 형태로 구성되어 있습니다. 아래는 B2B 클라이언트 요청부터 AI 기반 탐지 및 순화 루프에 이르는 시스템 전체의 작동 흐름도입니다.
 
 ```mermaid
-graph TD
-    Client([B2B 클라이언트]) -->|API Request<br/>X-API-Key, Prompt| Nginx[Nginx Reverse Proxy<br/>1차 IP 트래픽 방어]
-    
-    Nginx -->|Proxy Pass| APIServer[FastAPI Server<br/>메인 비즈니스 서버]
-    
-    subgraph 2차 방어선 및 비즈니스 로직
-        APIServer <-->|1. TPS / Quota 검증 및 캐싱| Redis[(Redis Cache)]
+flowchart TD
+    %% 스타일 정의
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:1px,stroke-dasharray: 5 5;
+    classDef proxy fill:#fff3e0,stroke:#ff9800,stroke-width:1px,color:#000,rx:5px,ry:5px;
+    classDef backend fill:#e3f2fd,stroke:#2196f3,stroke-width:1px,color:#000,rx:5px,ry:5px;
+    classDef db fill:#e8f5e9,stroke:#4caf50,stroke-width:1px,color:#000;
+    classDef ai fill:#f3e5f5,stroke:#9c27b0,stroke-width:1px,color:#000,rx:5px,ry:5px;
+    classDef layerBox fill:transparent,stroke:#555,stroke-dasharray: 5 5,stroke-width:2px;
+
+    %% -------------------------
+    %% 1. 외부 사용자 (External Zone)
+    %% -------------------------
+    subgraph External [외부망 접속]
+        direction LR
+        Client([B2B 클라이언트]):::external
+        Admin([대시보드 관리자]):::external
+    end
+
+    %% -------------------------
+    %% 2. 프록시 & 프론트엔드 (DMZ)
+    %% -------------------------
+    subgraph DMZ [프록시 및 웹 서버 계층]
+        direction LR
+        Nginx["Nginx Reverse Proxy<br/>(1차 IP 트래픽 방어)"]:::proxy
+        Frontend["Frontend Container<br/>(React / Vite)"]:::proxy
+    end
+
+    %% -------------------------
+    %% 3. 메인 백엔드 로직
+    %% -------------------------
+    subgraph Backend [메인 비즈니스 계층]
+        APIServer["FastAPI Server<br/>(2차 방어선 및 로직 오케스트레이션)"]:::backend
+    end
+
+    %% -------------------------
+    %% 4. 내부 인프라 & AI 코어
+    %% -------------------------
+    subgraph Infra [데이터베이스 및 AI 인프라]
+        direction LR
+        Redis[("Redis Cache<br/>(TPS/Quota 검증)")]:::db
+        AICore(("AI 추론 엔진<br/>(LightGBM / E5)")):::ai
+        DB[("MySQL 8.0<br/>(로그 비동기 저장)")]:::db
     end
     
-    subgraph 핵심 위협 탐지 및 순화 (Self-Correction Loop)
-        APIServer -->|2. 프롬프트 위협 분석| AICore((AI 추론 엔진<br/>LightGBM / E5))
-        AICore -->|3. 악성 여부 및 XAI 하이라이트| APIServer
-        
-        APIServer -->|4. 악성 탐지 시 순화 요청| OpenRouter([OpenRouter API<br/>LLM])
-        OpenRouter -->|5. 문맥 보존 순화 프롬프트| APIServer
-        
-        APIServer -.->|6. 순화된 문장 안전성 재검증 (최대 5회 반복)| AICore
-    end
+    OpenRouter(["OpenRouter API<br/>(LLM 프롬프트 순화)"]):::external
+
+    %% -------------------------
+    %% 연결선 및 데이터 흐름
+    %% -------------------------
+    Client -->|1. 프롬프트 API 요청| Nginx
+    Admin -->|UI 페이지 접속| Nginx
     
-    APIServer -->|7. 안전한 프롬프트 및 분석 결과 반환| Client
-    APIServer -.->|8. BackgroundTasks 비동기 로그 저장| DB[(MySQL 8.0)]
+    Nginx -->|라우팅| APIServer
+    Nginx -.->|정적 파일 제공| Frontend
     
-    Admin([대시보드 관리자]) -->|UI 접근| Nginx
-    Nginx -->|정적 자원| Frontend[Frontend Container<br/>React/Vite]
+    APIServer <-->|2. API Key 및 할당량(Quota) 검증| Redis
+    APIServer -->|3. 텍스트 위협 분석 요청| AICore
+    AICore -->|4. 악성 여부 및 분석 결과 반환| APIServer
+    
+    APIServer -->|5. 악성 탐지 시 LLM 순화 요청| OpenRouter
+    OpenRouter -->|6. 문맥이 보존된 순화 텍스트| APIServer
+    APIServer -.->|7. 순화된 문장 재검증 반복 (Self-Correction)| AICore
+    
+    APIServer -->|8. 최종 안전한 프롬프트 반환| Client
+    APIServer -.->|9. Background 비동기 저장| DB
+
+    %% 서브그래프 테두리 스타일 지정
+    class External,DMZ,Backend,Infra layerBox;
 ```
 
 * **Nginx (Reverse Proxy)**: 1차 방어선. 외부 트래픽 진입점. IP 기반 `limit_req_zone`을 활용한 원초적 트래픽 제한 및 어뷰징 방어.

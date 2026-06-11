@@ -208,7 +208,18 @@ const Landing: React.FC = () => {
               {result.xai_highlights && result.xai_highlights.length > 0 ? (
                 <div className="xai-box">
                   {result.xai_highlights.map((h: any, idx: number) => (
-                    <span key={idx} style={getHighlightStyle(h.weight)}>{h.text}</span>
+                    <span 
+                      key={idx} 
+                      style={getHighlightStyle(h.weight)}
+                      title={`기여도: ${Math.round(h.weight * 100)}%`}
+                    >
+                      {h.text}
+                      {h.weight >= 0.5 && (
+                        <span style={{ fontSize: '0.75em', marginLeft: '2px', opacity: 0.9, fontWeight: 500 }}>
+                          {Math.round(h.weight * 100)}%
+                        </span>
+                      )}
+                    </span>
                   ))}
                 </div>
               ) : (
