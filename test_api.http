@@ -2,7 +2,7 @@
 @baseUrl = http://localhost/api
 @email = testuser@example.com
 @password = secretpassword
-@apiKey = pg-sk-W9eW0hux8bxZXJ6yEEOep7rUJ5Bl4NCauzS2a58Uhsn
+@apiKey = 오픈 라우더 API 키 입력
 
 ### 1. Signup
 # @name signup
